@@ -1,0 +1,23 @@
+{
+  "name": "gmu-backend",
+  "version": "1.0.0",
+  "description": "GMU Hackathon backend Azure Functions (Node + TypeScript)",
+  "main": "dist/functions/index.js",
+  "scripts": {
+    "start": "func start",
+    "dev": "func start",
+    "build": "tsc -p .",
+    "lint": "echo 'No linter configured'"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@azure/functions": "^4.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

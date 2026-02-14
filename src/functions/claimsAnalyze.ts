@@ -1,0 +1,247 @@
+import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
+import { z } from "zod";
+import { ClaimAnalyzeResponse, EnrichedSource } from "../types/claims";
+import { verifyEvidenceSentences, normalizeSpaces } from "../lib/claims/evidence";
+import { pickTopK } from "../lib/claims/rank";
+import { callAzureOpenAIJson } from "../lib/openai/callAzureOpenAIJson";
+
+// Local declaration to avoid depending on Node typings.
+declare const process: {
+  env: {
+    AZURE_OPENAI_DEPLOYMENT?: string;
+    [key: string]: string | undefined;
+  };
+};
+
+const stanceSchema = z.enum(["supports", "opposes", "mixed", "irrelevant"]);
+
+const enrichedSourceSchema = z.object({
+  id: z.string().min(1),
+  openalex_id: z.string().optional(),
+  doi: z.string().optional(),
+  url: z.string().optional(),
+  title: z.string().min(1),
+  authors: z.array(z.string()),
+  year: z.number().int().optional(),
+  venue: z.string().optional(),
+  cited_by_count: z.number().int().nonnegative(),
+  abstract: z.string().nullable(),
+  needs_review: z.boolean(),
+  apa: z.string(),
+  apa_incomplete: z.boolean(),
+  apa_missing: z.array(z.string()),
+});
+
+const requestSchema = z.object({
+  thesis: z.string().min(1).max(4000),
+  claims: z.array(z.string().min(1)).min(1).max(6),
+  sources: z.array(enrichedSourceSchema).min(1).max(50),
+});
+
+const modelEvidenceItemSchema = z.object({
+  source_id: z.string().min(1),
+  stance: stanceSchema,
+  relevance: z.number(),
+  evidence_sentences: z.array(z.string().min(1)).min(1),
+});
+
+const modelResponseSchema = z.object({
+  claim: z.string(),
+  evidence: z.array(modelEvidenceItemSchema).max(20),
+});
+
+export async function claimsAnalyze(
+  request: HttpRequest,
+  context: InvocationContext
+): Promise<HttpResponseInit> {
+  try {
+    let body: unknown;
+
+    try {
+      body = await request.json();
+    } catch {
+      const badRequestResponse: HttpResponseInit = {
+        status: 400,
+        jsonBody: { error: "Invalid JSON body." },
+      };
+
+      return badRequestResponse;
+    }
+
+    const parsed = requestSchema.safeParse(body);
+    if (!parsed.success) {
+      const badRequestResponse: HttpResponseInit = {
+        status: 400,
+        jsonBody: {
+          error: "Request body failed validation.",
+        },
+      };
+
+      return badRequestResponse;
+    }
+
+    const { thesis, claims, sources } = parsed.data;
+
+    const sourcesWithAbstract: (EnrichedSource & { normalizedAbstract: string })[] = sources
+      .filter((s) => s.abstract && s.abstract.trim().length > 0)
+      .map((s) => ({ ...s, normalizedAbstract: normalizeSpaces(s.abstract as string) }));
+
+    const sourcesConsidered = sourcesWithAbstract.length;
+
+    if (sourcesConsidered === 0) {
+      const response: ClaimAnalyzeResponse & { warning: string } = {
+        thesis,
+        results: [],
+        meta: {
+          model: process.env.AZURE_OPENAI_DEPLOYMENT ?? "",
+          per_claim_calls: 0,
+          sources_considered: 0,
+        },
+        warning: "No sources with usable abstracts were available.",
+      };
+
+      const successResponse: HttpResponseInit = {
+        status: 200,
+        jsonBody: response,
+      };
+
+      return successResponse;
+    }
+
+    const sourceById = new Map<string, EnrichedSource>();
+    const abstractById = new Map<string, string>();
+
+    for (const s of sourcesWithAbstract) {
+      sourceById.set(s.id, s);
+      abstractById.set(s.id, s.normalizedAbstract);
+    }
+
+    const results: ClaimAnalyzeResponse["results"] = [];
+
+    for (const claim of claims) {
+      const prompt = buildPrompt(thesis, claim, sourcesWithAbstract);
+
+      const modelOutput = await callAzureOpenAIJson(
+        prompt,
+        modelResponseSchema,
+        context
+      );
+
+      const hits = [] as {
+        source_id: string;
+        apa: string;
+        relevance: number;
+        stance: z.infer<typeof stanceSchema>;
+        evidence_sentences: string[];
+      }[];
+
+      for (const item of modelOutput.evidence) {
+        const source = sourceById.get(item.source_id);
+        const abstractText = abstractById.get(item.source_id);
+
+        if (!source || !abstractText) {
+          continue;
+        }
+
+        const verifiedSentences = verifyEvidenceSentences({
+          abstract: abstractText,
+          evidence: item.evidence_sentences,
+        });
+
+        if (verifiedSentences.length === 0) {
+          continue;
+        }
+
+        hits.push({
+          source_id: source.id,
+          apa: source.apa,
+          relevance: item.relevance,
+          stance: item.stance,
+          evidence_sentences: verifiedSentences,
+        });
+      }
+
+      const supporting = hits.filter((h) => h.stance === "supports" || h.stance === "mixed");
+      const counter = hits.filter((h) => h.stance === "opposes");
+
+      const top_supporting = pickTopK(supporting, 3);
+      const top_counter = pickTopK(counter, 1);
+
+      results.push({
+        claim,
+        top_supporting,
+        top_counter,
+      });
+    }
+
+    const response: ClaimAnalyzeResponse = {
+      thesis,
+      results,
+      meta: {
+        model: process.env.AZURE_OPENAI_DEPLOYMENT ?? "",
+        per_claim_calls: claims.length,
+        sources_considered: sourcesConsidered,
+      },
+    };
+
+    const successResponse: HttpResponseInit = {
+      status: 200,
+      jsonBody: response,
+    };
+
+    return successResponse;
+  } catch {
+    const errorResponse: HttpResponseInit = {
+      status: 500,
+      jsonBody: {
+        error: "An unexpected error occurred while analyzing claims.",
+      },
+    };
+
+    return errorResponse;
+  }
+}
+
+function buildPrompt(
+  thesis: string,
+  claim: string,
+  sources: (EnrichedSource & { normalizedAbstract: string })[]
+): string {
+  const lines: string[] = [];
+
+  lines.push("You are analyzing how well research sources relate to a claim.");
+  lines.push("You output JSON only.");
+  lines.push("");
+  lines.push(`Thesis: ${thesis}`);
+  lines.push(`Claim: ${claim}`);
+  lines.push("");
+  lines.push("Sources:");
+
+  for (const s of sources) {
+    lines.push(`- id: ${s.id}`);
+    lines.push(`  apa: ${s.apa}`);
+    lines.push(`  abstract: ${s.normalizedAbstract}`);
+    lines.push("");
+  }
+
+  lines.push("");
+  lines.push("Respond with a JSON object with shape:");
+  lines.push(
+    '{"claim": string, "evidence": [{"source_id": string, "stance": "supports" | "opposes" | "mixed" | "irrelevant", "relevance": number, "evidence_sentences": string[]}]}'
+  );
+  lines.push("Where:");
+  lines.push("- stance describes how the source relates to the claim.");
+  lines.push("- relevance is between 0 and 1 (higher is more relevant).");
+  lines.push(
+    "- evidence_sentences are short exact substrings copied from the abstract that support your stance."
+  );
+
+  return lines.join("\n");
+}
+
+app.http("claims-analyze", {
+  route: "claims/analyze",
+  methods: ["POST"],
+  authLevel: "anonymous",
+  handler: claimsAnalyze,
+});

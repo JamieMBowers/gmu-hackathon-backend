@@ -1,0 +1,16 @@
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+
+# Azure Functions
+.localsettings.json
+local.settings.json
+func.zip
+
+# Logs
+npm-debug.log*
+yarn-error.log*
+
+# VS Code
+.vscode/
