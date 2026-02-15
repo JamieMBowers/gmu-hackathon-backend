@@ -50,6 +50,61 @@ const modelResponseSchema = z.object({
   evidence: z.array(modelEvidenceItemSchema).max(20),
 });
 
+type Stance = z.infer<typeof stanceSchema>;
+
+function buildHeuristicEvidenceForClaim(
+  claim: string,
+  sources: (EnrichedSource & { normalizedAbstract: string })[]
+): Array<{
+  source_id: string;
+  apa: string;
+  relevance: number;
+  stance: Stance;
+  evidence_sentences: string[];
+}> {
+  const hits: Array<{
+    source_id: string;
+    apa: string;
+    relevance: number;
+    stance: Stance;
+    evidence_sentences: string[];
+  }> = [];
+
+  const claimLower = claim.toLowerCase();
+
+  for (const s of sources) {
+    const abstract = s.normalizedAbstract;
+    if (!abstract) {
+      continue;
+    }
+
+    const sentences = abstract
+      .split(/[.!?]\s+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0);
+
+    if (sentences.length === 0) {
+      continue;
+    }
+
+    const matched = sentences.filter((sentence) =>
+      sentence.toLowerCase().includes(claimLower)
+    );
+
+    const evidenceSentences = (matched.length > 0 ? matched : sentences).slice(0, 2);
+
+    hits.push({
+      source_id: s.id,
+      apa: s.apa,
+      relevance: matched.length > 0 ? 0.9 : 0.4,
+      stance: "supports",
+      evidence_sentences: evidenceSentences,
+    });
+  }
+
+  return hits;
+}
+
 export async function claimsAnalyze(
   request: HttpRequest,
   context: InvocationContext
@@ -60,6 +115,7 @@ export async function claimsAnalyze(
     try {
       body = await request.json();
     } catch {
+      context.warn("claims-analyze: invalid JSON body");
       const badRequestResponse: HttpResponseInit = {
         status: 400,
         jsonBody: { error: "Invalid JSON body." },
@@ -70,6 +126,7 @@ export async function claimsAnalyze(
 
     const parsed = requestSchema.safeParse(body);
     if (!parsed.success) {
+      context.warn("claims-analyze: request body failed validation");
       const badRequestResponse: HttpResponseInit = {
         status: 400,
         jsonBody: {
@@ -82,6 +139,10 @@ export async function claimsAnalyze(
 
     const { thesis, claims, sources } = parsed.data;
 
+    context.log(
+      `claims-analyze: thesis_len=${thesis.length}, claims=${claims.length}, sources=${sources.length}`
+    );
+
     const sourcesWithAbstract: (EnrichedSource & { normalizedAbstract: string })[] = sources
       .filter((s) => s.abstract && s.abstract.trim().length > 0)
       .map((s) => ({ ...s, normalizedAbstract: normalizeSpaces(s.abstract as string) }));
@@ -89,6 +150,7 @@ export async function claimsAnalyze(
     const sourcesConsidered = sourcesWithAbstract.length;
 
     if (sourcesConsidered === 0) {
+      context.warn("claims-analyze: 0 sources with usable abstracts; returning empty results");
       const response: ClaimAnalyzeResponse & { warning: string } = {
         thesis,
         results: [],
@@ -119,46 +181,53 @@ export async function claimsAnalyze(
     const results: ClaimAnalyzeResponse["results"] = [];
 
     for (const claim of claims) {
-      const prompt = buildPrompt(thesis, claim, sourcesWithAbstract);
-
-      const modelOutput = await callAzureOpenAIJson(
-        prompt,
-        modelResponseSchema,
-        context
-      );
-
-      const hits = [] as {
+      let hits: {
         source_id: string;
         apa: string;
         relevance: number;
-        stance: z.infer<typeof stanceSchema>;
+        stance: Stance;
         evidence_sentences: string[];
-      }[];
+      }[] = [];
 
-      for (const item of modelOutput.evidence) {
-        const source = sourceById.get(item.source_id);
-        const abstractText = abstractById.get(item.source_id);
+      try {
+        const prompt = buildPrompt(thesis, claim, sourcesWithAbstract);
 
-        if (!source || !abstractText) {
-          continue;
+        const modelOutput = await callAzureOpenAIJson(
+          prompt,
+          modelResponseSchema,
+          context
+        );
+
+        for (const item of modelOutput.evidence) {
+          const source = sourceById.get(item.source_id);
+          const abstractText = abstractById.get(item.source_id);
+
+          if (!source || !abstractText) {
+            continue;
+          }
+
+          const verifiedSentences = verifyEvidenceSentences({
+            abstract: abstractText,
+            evidence: item.evidence_sentences,
+          });
+
+          if (verifiedSentences.length === 0) {
+            continue;
+          }
+
+          hits.push({
+            source_id: source.id,
+            apa: source.apa,
+            relevance: item.relevance,
+            stance: item.stance,
+            evidence_sentences: verifiedSentences,
+          });
         }
-
-        const verifiedSentences = verifyEvidenceSentences({
-          abstract: abstractText,
-          evidence: item.evidence_sentences,
-        });
-
-        if (verifiedSentences.length === 0) {
-          continue;
-        }
-
-        hits.push({
-          source_id: source.id,
-          apa: source.apa,
-          relevance: item.relevance,
-          stance: item.stance,
-          evidence_sentences: verifiedSentences,
-        });
+      } catch (err) {
+        context.warn(
+          `claims-analyze: falling back to heuristic analysis for claim due to error: ${(err as Error).message}`
+        );
+        hits = buildHeuristicEvidenceForClaim(claim, sourcesWithAbstract);
       }
 
       const supporting = hits.filter((h) => h.stance === "supports" || h.stance === "mixed");
@@ -184,13 +253,18 @@ export async function claimsAnalyze(
       },
     };
 
+    context.log(
+      `claims-analyze: completed for claims=${claims.length}, sources_considered=${sourcesConsidered}`
+    );
+
     const successResponse: HttpResponseInit = {
       status: 200,
       jsonBody: response,
     };
 
     return successResponse;
-  } catch {
+  } catch (err) {
+    context.error("claims-analyze: unexpected error while analyzing claims", err as Error);
     const errorResponse: HttpResponseInit = {
       status: 500,
       jsonBody: {

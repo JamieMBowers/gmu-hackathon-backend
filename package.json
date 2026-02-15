@@ -2,7 +2,7 @@
   "name": "gmu-backend",
   "version": "1.0.0",
   "description": "GMU Hackathon backend Azure Functions (Node + TypeScript)",
-  "main": "dist/functions/index.js",
+  "main": "functions/index.js",
   "scripts": {
     "start": "func start",
     "dev": "func start",

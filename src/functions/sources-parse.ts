@@ -25,6 +25,7 @@ export async function sourcesParse(
     try {
       body = await request.json();
     } catch {
+      context.warn("sources-parse: invalid JSON body");
       const badRequestResponse: HttpResponseInit = {
         status: 400,
         jsonBody: {
@@ -36,6 +37,7 @@ export async function sourcesParse(
     }
 
     if (!isSourcesParseRequestBody(body)) {
+      context.warn("sources-parse: invalid request shape (missing or empty 'pasted')");
       const badRequestResponse: HttpResponseInit = {
         status: 400,
         jsonBody: {
@@ -46,7 +48,12 @@ export async function sourcesParse(
       return badRequestResponse;
     }
 
+    const pastedLength = body.pasted.length;
     const result: ParseResult = parsePastedSources(body.pasted);
+
+    context.log(
+      `sources-parse: parsed=${result.stats.parsed}/${result.stats.lines}, with_doi=${result.stats.with_doi}, with_url=${result.stats.with_url}, pasted_length=${pastedLength}`
+    );
 
     const successResponse: HttpResponseInit = {
       status: 200,
@@ -54,7 +61,8 @@ export async function sourcesParse(
     };
 
     return successResponse;
-  } catch {
+  } catch (err) {
+    context.error("sources-parse: unexpected error while parsing sources", err as Error);
     const errorResponse: HttpResponseInit = {
       status: 500,
       jsonBody: {

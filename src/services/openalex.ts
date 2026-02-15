@@ -29,7 +29,7 @@ interface OpenAlexPrimaryLocation {
   source?: OpenAlexPrimaryLocationSource | null;
 }
 
-interface OpenAlexWork {
+export interface OpenAlexWork {
   id: string;
   doi?: string | null;
   display_name?: string | null;
@@ -65,6 +65,22 @@ interface SearchWorksResult {
   rateLimited: boolean;
 }
 
+interface SuggestedTitleCandidate {
+  title: string;
+  year?: number;
+}
+
+interface SuggestedCandidates {
+  dois: string[];
+  titles: SuggestedTitleCandidate[];
+}
+
+interface SuggestedWorksResult {
+  works: SearchResult[];
+  resolved: number;
+  unresolved: number;
+}
+
 async function fetchWithTimeout(url: string): Promise<Response> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -75,6 +91,54 @@ async function fetchWithTimeout(url: string): Promise<Response> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function mapOpenAlexWorkToSearchResult(work: OpenAlexWork): SearchResult {
+  const venueName =
+    work.host_venue?.display_name ?? work.primary_location?.source?.display_name ?? null;
+  const venue_badge = classifyVenueBadge(venueName);
+
+  const year = work.publication_year ?? undefined;
+  const doi = work.doi ?? undefined;
+
+  const doiUrl =
+    doi !== undefined
+      ? doi.startsWith("http")
+        ? doi
+        : `https://doi.org/${doi}`
+      : undefined;
+
+  const urlCandidate = doiUrl ?? work.primary_location?.landing_page_url ?? undefined;
+
+  const rawAuthorNames = (work.authorships ?? [])
+    .map((a) => a.author?.display_name ?? "")
+    .map((name) => normalizeWhitespace(name))
+    .filter((name) => name.length > 0);
+
+  const authors = rawAuthorNames.map((name) => toLastFirst(name));
+
+  const abstract = reconstructAbstract(work.abstract_inverted_index);
+
+  const title = (work.display_name ?? work.title ?? "").trim();
+
+  const needsReview =
+    title.length === 0 || abstract === null || venue_badge === "Unknown";
+
+  const venue = venueName ?? undefined;
+
+  return {
+    openalex_id: work.id,
+    title,
+    year,
+    venue,
+    venue_badge,
+    doi,
+    url: urlCandidate,
+    authors,
+    cited_by_count: work.cited_by_count ?? 0,
+    abstract,
+    needs_review: needsReview,
+  };
 }
 
 function reconstructAbstract(index: Record<string, number[]> | null | undefined): string | null {
@@ -204,7 +268,7 @@ function buildEnrichedFromWork(
   };
 }
 
-async function lookupWorkByDoi(doi: string): Promise<WorkLookupResult> {
+export async function lookupWorkByDoi(doi: string): Promise<WorkLookupResult> {
   const encodedDoi = encodeURIComponent(doi.trim());
   const url = new URL(`/works/doi:${encodedDoi}`, OPENALEX_BASE_URL);
   if (OPENALEX_MAILTO && OPENALEX_MAILTO.trim().length > 0) {
@@ -229,7 +293,7 @@ async function lookupWorkByDoi(doi: string): Promise<WorkLookupResult> {
   }
 }
 
-async function lookupWorkByTitle(title: string): Promise<WorkLookupResult> {
+export async function lookupWorkByTitle(title: string): Promise<WorkLookupResult> {
   const cleanedTitle = stripLeadingBullets(normalizeWhitespace(title));
   const params = new URLSearchParams({ search: cleanedTitle, "per-page": "5" });
   const url = new URL("/works", OPENALEX_BASE_URL);
@@ -325,53 +389,7 @@ export async function searchOpenAlexWorks(options: SearchWorksOptions): Promise<
     const data = (await response.json()) as OpenAlexSearchResponse;
     const works = data.results ?? [];
 
-    const mapped: SearchResult[] = works.map((work) => {
-      const venueName =
-        work.host_venue?.display_name ?? work.primary_location?.source?.display_name ?? null;
-      const venue_badge = classifyVenueBadge(venueName);
-
-      const year = work.publication_year ?? undefined;
-      const doi = work.doi ?? undefined;
-
-      const doiUrl =
-        doi !== undefined
-          ? doi.startsWith("http")
-            ? doi
-            : `https://doi.org/${doi}`
-          : undefined;
-
-      const urlCandidate = doiUrl ?? work.primary_location?.landing_page_url ?? undefined;
-
-      const rawAuthorNames = (work.authorships ?? [])
-        .map((a) => a.author?.display_name ?? "")
-        .map((name) => normalizeWhitespace(name))
-        .filter((name) => name.length > 0);
-
-      const authors = rawAuthorNames.map((name) => toLastFirst(name));
-
-      const abstract = reconstructAbstract(work.abstract_inverted_index);
-
-      const title = (work.display_name ?? work.title ?? "").trim();
-
-      const needsReview =
-        title.length === 0 || abstract === null || venue_badge === "Unknown";
-
-      const venue = venueName ?? undefined;
-
-      return {
-        openalex_id: work.id,
-        title,
-        year,
-        venue,
-        venue_badge,
-        doi,
-        url: urlCandidate,
-        authors,
-        cited_by_count: work.cited_by_count ?? 0,
-        abstract,
-        needs_review: needsReview,
-      };
-    });
+    const mapped: SearchResult[] = works.map((work) => mapOpenAlexWorkToSearchResult(work));
 
     const filteredByYear = mapped.filter((item) => {
       if (fromYear !== undefined && item.year !== undefined && item.year < fromYear) {
@@ -393,4 +411,126 @@ export async function searchOpenAlexWorks(options: SearchWorksOptions): Promise<
   } catch {
     return { results: [], rateLimited: false };
   }
+}
+
+export async function lookupWorkByOpenAlexId(id: string): Promise<WorkLookupResult> {
+  const trimmed = id.trim();
+  if (!trimmed) {
+    return { work: null, rateLimited: false, lowConfidence: false };
+  }
+
+  let url: URL;
+
+  if (/^https?:\/\//i.test(trimmed)) {
+    url = new URL(trimmed);
+  } else {
+    url = new URL(`/works/${encodeURIComponent(trimmed)}`, OPENALEX_BASE_URL);
+  }
+
+  if (OPENALEX_MAILTO && OPENALEX_MAILTO.trim().length > 0) {
+    url.searchParams.set("mailto", OPENALEX_MAILTO);
+  }
+
+  try {
+    const response = await fetchWithTimeout(url.toString());
+
+    if (response.status === 429) {
+      return { work: null, rateLimited: true, lowConfidence: false };
+    }
+
+    if (!response.ok) {
+      return { work: null, rateLimited: false, lowConfidence: false };
+    }
+
+    const work = (await response.json()) as OpenAlexWork;
+    return { work, rateLimited: false, lowConfidence: false };
+  } catch {
+    return { work: null, rateLimited: false, lowConfidence: false };
+  }
+}
+
+export async function resolveSuggestedWorks(
+  candidates: SuggestedCandidates
+): Promise<SuggestedWorksResult> {
+  const doiSet = new Set<string>();
+  const titleSet = new Set<string>();
+
+  const normalizedDois = candidates.dois
+    .map((d) => d.trim())
+    .filter((d) => d.length > 0)
+    .filter((d) => {
+      const lower = d.toLowerCase();
+      if (doiSet.has(lower)) return false;
+      doiSet.add(lower);
+      return true;
+    });
+
+  const normalizedTitles = candidates.titles.filter((t) => {
+    const key = t.title.trim().toLowerCase();
+    if (!key) return false;
+    if (titleSet.has(key)) return false;
+    titleSet.add(key);
+    return true;
+  });
+
+  const totalCandidates = normalizedDois.length + normalizedTitles.length;
+
+  const seenOpenAlexIds = new Set<string>();
+  const seenDoiValues = new Set<string>();
+  const works: SearchResult[] = [];
+
+  for (const doi of normalizedDois) {
+    const { work } = await lookupWorkByDoi(doi);
+    if (!work) {
+      continue;
+    }
+
+    const mapped = mapOpenAlexWorkToSearchResult(work);
+    const doiKey = (mapped.doi ?? "").toLowerCase();
+
+    if (seenOpenAlexIds.has(mapped.openalex_id) || (doiKey && seenDoiValues.has(doiKey))) {
+      continue;
+    }
+
+    seenOpenAlexIds.add(mapped.openalex_id);
+    if (doiKey) {
+      seenDoiValues.add(doiKey);
+    }
+    works.push(mapped);
+  }
+
+  for (const t of normalizedTitles) {
+    const { work, lowConfidence } = await lookupWorkByTitle(t.title);
+    if (!work || lowConfidence) {
+      continue;
+    }
+
+    const mapped = mapOpenAlexWorkToSearchResult(work);
+    const doiKey = (mapped.doi ?? "").toLowerCase();
+
+    if (seenOpenAlexIds.has(mapped.openalex_id) || (doiKey && seenDoiValues.has(doiKey))) {
+      continue;
+    }
+
+    seenOpenAlexIds.add(mapped.openalex_id);
+    if (doiKey) {
+      seenDoiValues.add(doiKey);
+    }
+    works.push(mapped);
+  }
+
+  const uniqueWorks = works;
+
+  const resolved = uniqueWorks.length;
+  const unresolved = Math.max(totalCandidates - resolved, 0);
+
+  return {
+    works: uniqueWorks,
+    resolved,
+    unresolved,
+  };
+}
+
+export function mapWorkToSearchResult(work: OpenAlexWork): SearchResult {
+  return mapOpenAlexWorkToSearchResult(work);
 }
