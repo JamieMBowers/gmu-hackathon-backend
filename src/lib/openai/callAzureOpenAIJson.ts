@@ -8,11 +8,16 @@ declare const process: {
     AZURE_OPENAI_API_KEY?: string;
     AZURE_OPENAI_DEPLOYMENT?: string;
     AZURE_OPENAI_API_VERSION?: string;
+    AZURE_OPENAI_TEMPERATURE?: string;
+    AZURE_OPENAI_TOP_P?: string;
+    AZURE_OPENAI_SEED?: string;
     [key: string]: string | undefined;
   };
 };
 
 const DEFAULT_API_VERSION = "2024-02-15-preview";
+const DEFAULT_TEMPERATURE = 0;
+const DEFAULT_TOP_P = 1;
 
 export async function callAzureOpenAIJson<T>(
   prompt: string,
@@ -23,6 +28,9 @@ export async function callAzureOpenAIJson<T>(
   const apiKey = process.env.AZURE_OPENAI_API_KEY;
   const deployment = process.env.AZURE_OPENAI_DEPLOYMENT;
   const apiVersion = process.env.AZURE_OPENAI_API_VERSION || DEFAULT_API_VERSION;
+  const temperature = readNumberEnv(process.env.AZURE_OPENAI_TEMPERATURE, DEFAULT_TEMPERATURE);
+  const topP = readNumberEnv(process.env.AZURE_OPENAI_TOP_P, DEFAULT_TOP_P);
+  const seed = readIntegerEnv(process.env.AZURE_OPENAI_SEED);
 
   if (!endpoint || !apiKey || !deployment) {
     ctx.warn("Azure OpenAI environment variables are not fully configured.");
@@ -33,15 +41,20 @@ export async function callAzureOpenAIJson<T>(
     deployment
   )}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
 
-  const body = {
+  const body: Record<string, unknown> = {
     messages: [
       { role: "system", content: "You output JSON only." },
       { role: "user", content: prompt },
     ],
-    temperature: 0.1,
+    temperature,
+    top_p: topP,
     max_tokens: 900,
     response_format: { type: "json_object" },
-  } as const;
+  };
+
+  if (seed !== undefined) {
+    body.seed = seed;
+  }
 
   const res = await fetch(url, {
     method: "POST",
@@ -139,4 +152,16 @@ function extractFirstJsonObject(text: string): string | null {
   }
 
   return null;
+}
+
+function readNumberEnv(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function readIntegerEnv(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }

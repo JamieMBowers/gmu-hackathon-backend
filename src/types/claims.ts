@@ -44,5 +44,16 @@ export interface ClaimAnalyzeResponse {
     model: string;
     per_claim_calls: number;
     sources_considered: number;
+    debug?: {
+      openai_config: {
+        endpoint_host: string;
+        deployment: string;
+        api_version: string;
+        temperature: string;
+        top_p: string;
+        seed: string;
+      };
+      heuristic_fallback_count: number;
+    };
   };
 }

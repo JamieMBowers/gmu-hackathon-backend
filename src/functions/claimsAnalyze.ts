@@ -8,7 +8,12 @@ import { callAzureOpenAIJson } from "../lib/openai/callAzureOpenAIJson";
 // Local declaration to avoid depending on Node typings.
 declare const process: {
   env: {
+    AZURE_OPENAI_ENDPOINT?: string;
     AZURE_OPENAI_DEPLOYMENT?: string;
+    AZURE_OPENAI_API_VERSION?: string;
+    AZURE_OPENAI_TEMPERATURE?: string;
+    AZURE_OPENAI_TOP_P?: string;
+    AZURE_OPENAI_SEED?: string;
     [key: string]: string | undefined;
   };
 };
@@ -142,6 +147,7 @@ export async function claimsAnalyze(
     context.log(
       `claims-analyze: thesis_len=${thesis.length}, claims=${claims.length}, sources=${sources.length}`
     );
+    context.log(`claims-analyze: openai_config=${JSON.stringify(buildOpenAiLogConfig())}`);
 
     const sourcesWithAbstract: (EnrichedSource & { normalizedAbstract: string })[] = sources
       .filter((s) => s.abstract && s.abstract.trim().length > 0)
@@ -158,6 +164,10 @@ export async function claimsAnalyze(
           model: process.env.AZURE_OPENAI_DEPLOYMENT ?? "",
           per_claim_calls: 0,
           sources_considered: 0,
+          debug: {
+            openai_config: buildOpenAiLogConfig(),
+            heuristic_fallback_count: 0,
+          },
         },
         warning: "No sources with usable abstracts were available.",
       };
@@ -179,6 +189,7 @@ export async function claimsAnalyze(
     }
 
     const results: ClaimAnalyzeResponse["results"] = [];
+    let heuristicFallbackCount = 0;
 
     for (const claim of claims) {
       let hits: {
@@ -227,6 +238,7 @@ export async function claimsAnalyze(
         context.warn(
           `claims-analyze: falling back to heuristic analysis for claim due to error: ${(err as Error).message}`
         );
+        heuristicFallbackCount += 1;
         hits = buildHeuristicEvidenceForClaim(claim, sourcesWithAbstract);
       }
 
@@ -250,6 +262,10 @@ export async function claimsAnalyze(
         model: process.env.AZURE_OPENAI_DEPLOYMENT ?? "",
         per_claim_calls: claims.length,
         sources_considered: sourcesConsidered,
+        debug: {
+          openai_config: buildOpenAiLogConfig(),
+          heuristic_fallback_count: heuristicFallbackCount,
+        },
       },
     };
 
@@ -311,6 +327,33 @@ function buildPrompt(
   );
 
   return lines.join("\n");
+}
+
+function buildOpenAiLogConfig(): {
+  endpoint_host: string;
+  deployment: string;
+  api_version: string;
+  temperature: string;
+  top_p: string;
+  seed: string;
+} {
+  return {
+    endpoint_host: getEndpointHost(process.env.AZURE_OPENAI_ENDPOINT),
+    deployment: process.env.AZURE_OPENAI_DEPLOYMENT ?? "",
+    api_version: process.env.AZURE_OPENAI_API_VERSION ?? "",
+    temperature: process.env.AZURE_OPENAI_TEMPERATURE ?? "",
+    top_p: process.env.AZURE_OPENAI_TOP_P ?? "",
+    seed: process.env.AZURE_OPENAI_SEED ?? "",
+  };
+}
+
+function getEndpointHost(endpoint: string | undefined): string {
+  if (!endpoint) return "";
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return "";
+  }
 }
 
 app.http("claims-analyze", {
