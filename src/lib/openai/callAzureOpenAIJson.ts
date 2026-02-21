@@ -11,6 +11,7 @@ declare const process: {
     AZURE_OPENAI_TEMPERATURE?: string;
     AZURE_OPENAI_TOP_P?: string;
     AZURE_OPENAI_SEED?: string;
+    AZURE_OPENAI_MAX_TOKENS?: string;
     [key: string]: string | undefined;
   };
 };
@@ -18,6 +19,7 @@ declare const process: {
 const DEFAULT_API_VERSION = "2024-02-15-preview";
 const DEFAULT_TEMPERATURE = 0;
 const DEFAULT_TOP_P = 1;
+const DEFAULT_MAX_TOKENS = 450;
 
 export async function callAzureOpenAIJson<T>(
   prompt: string,
@@ -31,6 +33,7 @@ export async function callAzureOpenAIJson<T>(
   const temperature = readNumberEnv(process.env.AZURE_OPENAI_TEMPERATURE, DEFAULT_TEMPERATURE);
   const topP = readNumberEnv(process.env.AZURE_OPENAI_TOP_P, DEFAULT_TOP_P);
   const seed = readIntegerEnv(process.env.AZURE_OPENAI_SEED);
+  const maxTokens = readIntegerEnv(process.env.AZURE_OPENAI_MAX_TOKENS, DEFAULT_MAX_TOKENS);
 
   if (!endpoint || !apiKey || !deployment) {
     ctx.warn("Azure OpenAI environment variables are not fully configured.");
@@ -48,7 +51,7 @@ export async function callAzureOpenAIJson<T>(
     ],
     temperature,
     top_p: topP,
-    max_tokens: 900,
+    max_tokens: maxTokens,
     response_format: { type: "json_object" },
   };
 

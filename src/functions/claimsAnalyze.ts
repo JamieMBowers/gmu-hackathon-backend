@@ -14,6 +14,7 @@ declare const process: {
     AZURE_OPENAI_TEMPERATURE?: string;
     AZURE_OPENAI_TOP_P?: string;
     AZURE_OPENAI_SEED?: string;
+    CLAIMS_ANALYZE_CONCURRENCY?: string;
     [key: string]: string | undefined;
   };
 };
@@ -188,10 +189,12 @@ export async function claimsAnalyze(
       abstractById.set(s.id, s.normalizedAbstract);
     }
 
-    const results: ClaimAnalyzeResponse["results"] = [];
-    let heuristicFallbackCount = 0;
+    const concurrency = Math.max(
+      1,
+      Math.min(readIntegerEnv(process.env.CLAIMS_ANALYZE_CONCURRENCY, 3), claims.length)
+    );
 
-    for (const claim of claims) {
+    const claimResults = await mapWithConcurrency(claims, concurrency, async (claim) => {
       let hits: {
         source_id: string;
         apa: string;
@@ -199,6 +202,7 @@ export async function claimsAnalyze(
         stance: Stance;
         evidence_sentences: string[];
       }[] = [];
+      let usedFallback = false;
 
       try {
         const prompt = buildPrompt(thesis, claim, sourcesWithAbstract);
@@ -238,21 +242,34 @@ export async function claimsAnalyze(
         context.warn(
           `claims-analyze: falling back to heuristic analysis for claim due to error: ${(err as Error).message}`
         );
-        heuristicFallbackCount += 1;
+        usedFallback = true;
         hits = buildHeuristicEvidenceForClaim(claim, sourcesWithAbstract);
       }
 
       const supporting = hits.filter((h) => h.stance === "supports" || h.stance === "mixed");
       const counter = hits.filter((h) => h.stance === "opposes");
 
-      const top_supporting = pickTopK(supporting, 3);
-      const top_counter = pickTopK(counter, 1);
-
-      results.push({
+      return {
         claim,
-        top_supporting,
-        top_counter,
+        top_supporting: pickTopK(supporting, 3),
+        top_counter: pickTopK(counter, 1),
+        usedFallback,
+      };
+    });
+
+    const results: ClaimAnalyzeResponse["results"] = [];
+    let heuristicFallbackCount = 0;
+
+    for (const result of claimResults) {
+      results.push({
+        claim: result.claim,
+        top_supporting: result.top_supporting,
+        top_counter: result.top_counter,
       });
+
+      if (result.usedFallback) {
+        heuristicFallbackCount += 1;
+      }
     }
 
     const response: ClaimAnalyzeResponse = {
@@ -290,6 +307,34 @@ export async function claimsAnalyze(
 
     return errorResponse;
   }
+}
+
+function readIntegerEnv(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<R>
+): Promise<R[]> {
+  if (items.length === 0) return [];
+
+  const results: R[] = new Array(items.length);
+  let index = 0;
+
+  const runners = new Array(Math.min(limit, items.length)).fill(0).map(async () => {
+    while (index < items.length) {
+      const current = index;
+      index += 1;
+      results[current] = await worker(items[current]);
+    }
+  });
+
+  await Promise.all(runners);
+  return results;
 }
 
 function buildPrompt(
