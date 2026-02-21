@@ -16,6 +16,7 @@
   "license": "MIT",
   "dependencies": {
     "@azure/functions": "^4.0.0",
+    "@azure/monitor-opentelemetry": "^1.15.1",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "zod": "^3.23.8"

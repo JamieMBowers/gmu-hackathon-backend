@@ -1,3 +1,4 @@
+import "../instrumentation";
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 import { z } from "zod";
 import { ClaimAnalyzeResponse, EnrichedSource } from "../types/claims";

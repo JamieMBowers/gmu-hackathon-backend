@@ -1,3 +1,4 @@
+import "../instrumentation";
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 
 export async function health(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
