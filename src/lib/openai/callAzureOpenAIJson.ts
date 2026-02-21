@@ -163,8 +163,9 @@ function readNumberEnv(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function readIntegerEnv(value: string | undefined): number | undefined {
-  if (!value) return undefined;
+function readIntegerEnv(value: string | undefined, fallback?: number): number | undefined {
+  if (!value) return fallback;
   const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) ? parsed : undefined;
+  if (Number.isFinite(parsed)) return parsed;
+  return fallback;
 }
