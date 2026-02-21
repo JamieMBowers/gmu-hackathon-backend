@@ -1,4 +1,3 @@
-import "../instrumentation";
 import { app, HttpRequest, HttpResponseInit, InvocationContext } from "@azure/functions";
 
 declare const process: {
