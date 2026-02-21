@@ -381,6 +381,7 @@ function buildOpenAiLogConfig(): {
   temperature: string;
   top_p: string;
   seed: string;
+  max_tokens: string;
 } {
   return {
     endpoint_host: getEndpointHost(process.env.AZURE_OPENAI_ENDPOINT),
@@ -389,6 +390,7 @@ function buildOpenAiLogConfig(): {
     temperature: process.env.AZURE_OPENAI_TEMPERATURE ?? "",
     top_p: process.env.AZURE_OPENAI_TOP_P ?? "",
     seed: process.env.AZURE_OPENAI_SEED ?? "",
+    max_tokens: process.env.AZURE_OPENAI_MAX_TOKENS ?? "",
   };
 }
 

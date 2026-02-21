@@ -19,7 +19,7 @@ declare const process: {
 const DEFAULT_API_VERSION = "2024-02-15-preview";
 const DEFAULT_TEMPERATURE = 0;
 const DEFAULT_TOP_P = 1;
-const DEFAULT_MAX_TOKENS = 450;
+const DEFAULT_MAX_TOKENS = 900;
 
 export async function callAzureOpenAIJson<T>(
   prompt: string,

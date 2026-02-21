@@ -37,10 +37,12 @@ export async function configDebug(
   const openaiTemperature = process.env.AZURE_OPENAI_TEMPERATURE;
   const openaiTopP = process.env.AZURE_OPENAI_TOP_P;
   const openaiSeed = process.env.AZURE_OPENAI_SEED;
+  const openaiMaxTokens = process.env.AZURE_OPENAI_MAX_TOKENS;
 
   const temperature = readNumberEnv(openaiTemperature, 0);
   const topP = readNumberEnv(openaiTopP, 1);
   const seed = readIntegerEnv(openaiSeed);
+  const maxTokens = readIntegerEnv(openaiMaxTokens);
 
   const responseBody = {
     openalex_base_url_present: typeof baseUrl === "string" && baseUrl.trim().length > 0,
@@ -51,6 +53,7 @@ export async function configDebug(
     openai_temperature: temperature,
     openai_top_p: topP,
     openai_seed: seed ?? null,
+    openai_max_tokens: maxTokens ?? null,
   };
 
   const response: HttpResponseInit = {
