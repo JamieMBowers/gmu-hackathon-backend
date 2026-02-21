@@ -4,6 +4,7 @@ import { ClaimAnalyzeResponse, EnrichedSource } from "../types/claims";
 import { verifyEvidenceSentences, normalizeSpaces } from "../lib/claims/evidence";
 import { pickTopK } from "../lib/claims/rank";
 import { callAzureOpenAIJson } from "../lib/openai/callAzureOpenAIJson";
+import { trackClaimsAnalysis } from "../lib/telemetry";
 
 // Local declaration to avoid depending on Node typings.
 declare const process: {
@@ -115,6 +116,8 @@ export async function claimsAnalyze(
   request: HttpRequest,
   context: InvocationContext
 ): Promise<HttpResponseInit> {
+  const startTime = Date.now();
+  
   try {
     let body: unknown;
 
@@ -289,6 +292,15 @@ export async function claimsAnalyze(
     context.log(
       `claims-analyze: completed for claims=${claims.length}, sources_considered=${sourcesConsidered}`
     );
+
+    // Track custom metrics in Application Insights
+    const analysisTimeMs = Date.now() - startTime;
+    trackClaimsAnalysis(context, {
+      claimCount: claims.length,
+      heuristicFallbackCount,
+      analysisTimeMs,
+      openaiMaxTokens: parseInt(process.env.AZURE_OPENAI_MAX_TOKENS ?? "900", 10),
+    });
 
     const successResponse: HttpResponseInit = {
       status: 200,
