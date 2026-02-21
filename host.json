@@ -5,12 +5,7 @@
       "samplingSettings": {
         "isEnabled": true,
         "excludedTypes": "Request"
-      },
-      "enableLiveMetrics": true,
-      "enableLiveMetricsFilters": true
-    },
-    "logLevel": {
-      "default": "Information"
+      }
     }
   },
   "extensionBundle": {
