@@ -7,6 +7,8 @@ coverage/
 .localsettings.json
 local.settings.json
 func.zip
+func-full.zip
+deploy-backend*.zip
 
 # Logs
 npm-debug.log*
